@@ -88,7 +88,7 @@ class SimTestApp(tk.Tk):
         title.grid(row=0, column=0, sticky="ew", pady=8)
 
     def _build_config_section(self):
-        frame = ttk.LabelFrame(self, text="参数配置")
+        frame = tk.LabelFrame(self, text="参数配置", bd=2)
         frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 5))
 
         self.select_btn = ttk.Button(frame, text="配置文件",
@@ -103,7 +103,7 @@ class SimTestApp(tk.Tk):
         self.server_btn.pack(side="left", padx=(24, 8), pady=8)
 
     def _build_slave_section(self):
-        frame = ttk.LabelFrame(self, text="从站设备")
+        frame = tk.LabelFrame(self, text="从站设备", bd=2)
         frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
@@ -118,17 +118,23 @@ class SimTestApp(tk.Tk):
         slave1.columnconfigure(0, weight=1, uniform="slave1")
         slave1.columnconfigure(1, weight=1, uniform="slave1")
 
-        input_frame = ttk.LabelFrame(slave1, text="输入通道")
-        input_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-        self.input_tree = self._make_channel_table(input_frame, INPUT_HEADERS)
-
-        output_frame = ttk.LabelFrame(slave1, text="输出通道")
-        output_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
-        self.output_tree = self._make_channel_table(output_frame, OUTPUT_HEADERS)
+        self.input_tree = self._build_channel_block(slave1, "输入通道", INPUT_HEADERS, 0)
+        self.output_tree = self._build_channel_block(slave1, "输出通道", OUTPUT_HEADERS, 1)
 
         # 从站2/3/4：空白页
         for name in ("从站2", "从站3", "从站4"):
             notebook.add(ttk.Frame(notebook), text=name)
+
+    def _build_channel_block(self, parent, title, headers, column):
+        block = tk.LabelFrame(parent, text=title, bd=2)
+        block.grid(row=0, column=column, sticky="nsew", padx=5, pady=5)
+        block.rowconfigure(0, weight=1)
+        block.columnconfigure(0, weight=1)
+
+        tree, vsb = self._make_channel_table(block, headers)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        return tree
 
     def _make_channel_table(self, parent, headers):
         columns = [f"c{i}" for i in range(len(headers))]
@@ -140,12 +146,10 @@ class SimTestApp(tk.Tk):
 
         vsb = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)
-        tree.pack(side="left", fill="both", expand=True, padx=(5, 0), pady=5)
-        vsb.pack(side="right", fill="y", padx=(0, 5), pady=5)
-        return tree
+        return tree, vsb
 
     def _build_log_section(self):
-        frame = ttk.LabelFrame(self, text="系统日志")
+        frame = tk.LabelFrame(self, text="系统日志", bd=2)
         frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=(5, 10))
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
