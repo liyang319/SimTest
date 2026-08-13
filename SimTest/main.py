@@ -4,7 +4,13 @@ import queue
 import tkinter as tk
 from tkinter import filedialog, ttk
 
+from ModbusTcpServer import ModbusTcpServer
+
 logger = logging.getLogger("SimTest")
+
+# Modbus TCP 服务默认地址（端口 5020 避免与系统 502 冲突，后续可由配置文件覆盖）
+SERVER_HOST = "0.0.0.0"
+SERVER_PORT = 5020
 
 # 输入/输出通道表头
 INPUT_HEADERS = ("序号", "机箱编号", "板卡型号", "槽位号", "通道号", "当前值")
@@ -242,6 +248,7 @@ class SimTestApp(tk.Tk):
 
         self.server_running = False
         self.config_path = None
+        self.modbus_server = None
 
         self.log_queue = queue.Queue()
         self._setup_logging()
@@ -395,16 +402,35 @@ class SimTestApp(tk.Tk):
             self.start_server()
 
     def start_server(self):
-        """预留接口：启动 Modbus TCP server，后续实现。"""
-        self.server_running = True
-        self.server_btn.config(text="停止服务")
-        logger.info("服务已启动（待实现）")
+        """启动 Modbus TCP server。"""
+        if self.server_running:
+            return
+        self.modbus_server = ModbusTcpServer(
+            host=SERVER_HOST,
+            port=SERVER_PORT,
+            on_data_received=self._on_data_received,
+            on_data_sent=self._on_data_sent,
+        )
+        if self.modbus_server.start():
+            self.server_running = True
+            self.server_btn.config(text="停止服务")
 
     def stop_server(self):
-        """预留接口：停止 Modbus TCP server，后续实现。"""
+        """停止 Modbus TCP server。"""
+        if not self.server_running:
+            return
+        if self.modbus_server:
+            self.modbus_server.stop()
         self.server_running = False
         self.server_btn.config(text="启动服务")
-        logger.info("服务已停止（待实现）")
+
+    def _on_data_received(self, data):
+        """收到 client 数据回调。"""
+        logger.info("收到数据: %s", data.hex())
+
+    def _on_data_sent(self, data):
+        """向 client 发送数据回调。"""
+        logger.info("发送数据: %s", data.hex())
 
     # ------------------------------------------------------------------ #
     # 从站通道表 —— 数据刷新（预留接口）
