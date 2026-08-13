@@ -21,6 +21,108 @@ HEADER_WIDTHS = {
     "输出值": 110,
 }
 
+# 从站1 输入通道默认配置：机箱编号固定为 2
+INPUT_CHASSIS = 2
+# (板卡型号, 槽位号, 起始通道号, 结束通道号)
+INPUT_BOARDS = [
+    ("NI-9403-DI", 1, 1, 32),
+    ("NI-9426-DI", 2, 1, 31),
+    ("NI-9427-DI", 2, 32, 32),
+    ("NI-9203-AI", 5, 1, 16),
+    ("NI-9203-AI", 6, 1, 16),
+]
+
+
+def build_input_channel_rows():
+    """生成从站1 输入通道行数据，当前值默认为 0。"""
+    rows = []
+    idx = 1
+    for model, slot, start_ch, end_ch in INPUT_BOARDS:
+        for channel in range(start_ch, end_ch + 1):
+            rows.append((idx, INPUT_CHASSIS, model, slot, channel, 0))
+            idx += 1
+    return rows
+
+
+class ChannelTable(tk.Frame):
+    """带单元格边框线的可滚动表格（固定表头 + 可滚动数据区）。"""
+
+    HEADER_BG = "#e9e9e9"
+    CELL_BG = "#ffffff"
+    LINE = "#888888"
+    ROW_H = 24
+    HEADER_H = 26
+    FONT = ("Helvetica", 12)
+    HEADER_FONT = ("Helvetica", 12, "bold")
+
+    def __init__(self, parent, headers, col_widths):
+        super().__init__(parent)
+        self.headers = headers
+        self.col_widths = list(col_widths)
+        self.rows = []
+
+        self.header_canvas = tk.Canvas(self, height=self.HEADER_H, bg=self.HEADER_BG,
+                                       highlightthickness=0, borderwidth=0)
+        self.body_canvas = tk.Canvas(self, bg=self.CELL_BG,
+                                     highlightthickness=0, borderwidth=0)
+        vsb = ttk.Scrollbar(self, orient="vertical", command=self.body_canvas.yview)
+        self.body_canvas.configure(yscrollcommand=vsb.set)
+
+        self.header_canvas.grid(row=0, column=0, sticky="ew")
+        self.body_canvas.grid(row=1, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, rowspan=2, sticky="ns")
+
+        self.rowconfigure(1, weight=1)
+        self.columnconfigure(0, weight=1)
+
+        self.header_canvas.bind("<Configure>", self._draw_header)
+        self.body_canvas.bind("<Configure>", self._draw_body)
+
+    def set_rows(self, rows):
+        self.rows = rows
+        self._draw_body()
+
+    def _col_x(self, width):
+        total = sum(self.col_widths)
+        xs = []
+        x = 0.0
+        for w in self.col_widths:
+            xs.append(x)
+            x += w * width / total
+        return xs
+
+    def _draw_header(self, event=None):
+        c = self.header_canvas
+        c.delete("all")
+        w = c.winfo_width()
+        if w <= 1:
+            return
+        xs = self._col_x(w)
+        for j, header in enumerate(self.headers):
+            x0 = xs[j]
+            x1 = xs[j + 1] if j + 1 < len(xs) else w
+            c.create_rectangle(x0, 0, x1, self.HEADER_H, fill=self.HEADER_BG, outline=self.LINE)
+            c.create_text((x0 + x1) / 2, self.HEADER_H / 2, text=header,
+                          anchor="center", font=self.HEADER_FONT)
+
+    def _draw_body(self, event=None):
+        c = self.body_canvas
+        c.delete("all")
+        w = c.winfo_width()
+        if w <= 1:
+            return
+        xs = self._col_x(w)
+        for i, row in enumerate(self.rows):
+            y0 = i * self.ROW_H
+            y1 = y0 + self.ROW_H
+            for j, val in enumerate(row):
+                x0 = xs[j]
+                x1 = xs[j + 1] if j + 1 < len(xs) else w
+                c.create_rectangle(x0, y0, x1, y1, fill=self.CELL_BG, outline=self.LINE)
+                c.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=str(val),
+                              anchor="center", font=self.FONT)
+        c.configure(scrollregion=(0, 0, w, len(self.rows) * self.ROW_H))
+
 
 class QueueLogHandler(logging.Handler):
     """将日志记录投递到队列，由 UI 线程统一刷新到“系统日志”区域（线程安全）。"""
@@ -49,6 +151,9 @@ class SimTestApp(tk.Tk):
         self.log_queue = queue.Queue()
         self._setup_logging()
         self._build_ui()
+
+        # 默认填充从站1 输入通道
+        self.update_input_channels(build_input_channel_rows())
 
         self.after(100, self._poll_log_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -134,8 +239,8 @@ class SimTestApp(tk.Tk):
         slave1.columnconfigure(0, weight=1, uniform="slave1")
         slave1.columnconfigure(1, weight=1, uniform="slave1")
 
-        self.input_tree = self._build_channel_block(slave1, "输入通道", INPUT_HEADERS, 0)
-        self.output_tree = self._build_channel_block(slave1, "输出通道", OUTPUT_HEADERS, 1)
+        self.input_table = self._build_channel_block(slave1, "输入通道", INPUT_HEADERS, 0)
+        self.output_table = self._build_channel_block(slave1, "输出通道", OUTPUT_HEADERS, 1)
 
         # 从站2/3/4：空白页
         for name in ("从站2", "从站3", "从站4"):
@@ -147,22 +252,9 @@ class SimTestApp(tk.Tk):
         block.rowconfigure(0, weight=1)
         block.columnconfigure(0, weight=1)
 
-        tree, vsb = self._make_channel_table(block, headers)
-        tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        return tree
-
-    def _make_channel_table(self, parent, headers):
-        columns = [f"c{i}" for i in range(len(headers))]
-        tree = ttk.Treeview(parent, columns=columns, show="headings", height=15)
-        for col, header in zip(columns, headers):
-            tree.heading(col, text=header)
-            width = HEADER_WIDTHS.get(header, 110)
-            tree.column(col, width=width, minwidth=40, anchor="center", stretch=True)
-
-        vsb = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=vsb.set)
-        return tree, vsb
+        table = ChannelTable(block, headers, [HEADER_WIDTHS.get(h, 110) for h in headers])
+        table.grid(row=0, column=0, sticky="nsew")
+        return table
 
     def _build_log_section(self):
         frame = tk.LabelFrame(self, text="系统日志", bd=2)
@@ -219,21 +311,12 @@ class SimTestApp(tk.Tk):
     # 从站通道表 —— 数据刷新（预留接口）
     # ------------------------------------------------------------------ #
     def update_input_channels(self, rows):
-        """预留接口：刷新输入通道列表，rows 为通道数据列表。"""
-        self._clear_tree(self.input_tree)
-        for row in rows:
-            self.input_tree.insert("", "end", values=row)
+        """刷新输入通道列表，rows 为通道数据列表。"""
+        self.input_table.set_rows(rows)
 
     def update_output_channels(self, rows):
-        """预留接口：刷新输出通道列表，rows 为通道数据列表。"""
-        self._clear_tree(self.output_tree)
-        for row in rows:
-            self.output_tree.insert("", "end", values=row)
-
-    @staticmethod
-    def _clear_tree(tree):
-        for item in tree.get_children():
-            tree.delete(item)
+        """刷新输出通道列表，rows 为通道数据列表。"""
+        self.output_table.set_rows(rows)
 
     # ------------------------------------------------------------------ #
     # 退出
