@@ -10,6 +10,17 @@ logger = logging.getLogger("SimTest")
 INPUT_HEADERS = ("序号", "机箱编号", "板卡型号", "槽位号", "通道号", "当前值")
 OUTPUT_HEADERS = ("序号", "机箱编号", "板卡型号", "槽位号", "通道号", "输出值")
 
+# 各列宽度，确保所有列标题无需横向滚动即可完整显示
+HEADER_WIDTHS = {
+    "序号": 45,
+    "机箱编号": 80,
+    "板卡型号": 110,
+    "槽位号": 60,
+    "通道号": 60,
+    "当前值": 110,
+    "输出值": 110,
+}
+
 
 class QueueLogHandler(logging.Handler):
     """将日志记录投递到队列，由 UI 线程统一刷新到“系统日志”区域（线程安全）。"""
@@ -108,8 +119,13 @@ class SimTestApp(tk.Tk):
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
 
+        style = ttk.Style(self)
+        # 负左右 padding 抵消 macOS aqua 主题 Notebook 客户端区域自带的 9px 边框，
+        # 上下保持默认，避免顶部的 tab 标签被内容区遮挡
+        style.configure("TNotebook", padding=(-9, 0))
+
         notebook = ttk.Notebook(frame)
-        notebook.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+        notebook.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
 
         # 从站1：左右分栏（输入通道 / 输出通道）
         slave1 = ttk.Frame(notebook)
@@ -127,7 +143,7 @@ class SimTestApp(tk.Tk):
 
     def _build_channel_block(self, parent, title, headers, column):
         block = tk.LabelFrame(parent, text=title, bd=2)
-        block.grid(row=0, column=column, sticky="nsew", padx=5, pady=5)
+        block.grid(row=0, column=column, sticky="nsew", padx=2, pady=2)
         block.rowconfigure(0, weight=1)
         block.columnconfigure(0, weight=1)
 
@@ -141,8 +157,8 @@ class SimTestApp(tk.Tk):
         tree = ttk.Treeview(parent, columns=columns, show="headings", height=15)
         for col, header in zip(columns, headers):
             tree.heading(col, text=header)
-            width = 60 if header == "序号" else 110
-            tree.column(col, width=width, anchor="center", stretch=True)
+            width = HEADER_WIDTHS.get(header, 110)
+            tree.column(col, width=width, minwidth=40, anchor="center", stretch=True)
 
         vsb = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)
