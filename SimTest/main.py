@@ -44,6 +44,28 @@ def build_input_channel_rows():
     return rows
 
 
+# 从站1 输出通道默认配置：机箱编号固定为 2
+OUTPUT_CHASSIS = 2
+# (板卡型号, 槽位号, 起始通道号, 结束通道号)
+OUTPUT_BOARDS = [
+    ("NI-9403-DO", 3, 1, 32),
+    ("NI-9476-DO", 4, 1, 32),
+    ("NI-9266-AO", 7, 1, 16),
+    ("NI-9266-AO", 8, 1, 16),
+]
+
+
+def build_output_channel_rows():
+    """生成从站1 输出通道行数据，输出值默认为 0。"""
+    rows = []
+    idx = 1
+    for model, slot, start_ch, end_ch in OUTPUT_BOARDS:
+        for channel in range(start_ch, end_ch + 1):
+            rows.append([idx, OUTPUT_CHASSIS, model, slot, channel, 0])
+            idx += 1
+    return rows
+
+
 class ChannelTable(tk.Frame):
     """带单元格边框线的可滚动表格（固定表头 + 可滚动数据区）。"""
 
@@ -55,11 +77,15 @@ class ChannelTable(tk.Frame):
     FONT = ("Helvetica", 12)
     HEADER_FONT = ("Helvetica", 12, "bold")
 
-    def __init__(self, parent, headers, col_widths):
+    def __init__(self, parent, headers, col_widths, editable_columns=()):
         super().__init__(parent)
         self.headers = headers
         self.col_widths = list(col_widths)
+        self.editable_columns = set(editable_columns)
         self.rows = []
+        self._edit_entry = None
+        self._edit_row = None
+        self._edit_col = None
 
         self.header_canvas = tk.Canvas(self, height=self.HEADER_H, bg=self.HEADER_BG,
                                        highlightthickness=0, borderwidth=0)
@@ -77,9 +103,10 @@ class ChannelTable(tk.Frame):
 
         self.header_canvas.bind("<Configure>", self._draw_header)
         self.body_canvas.bind("<Configure>", self._draw_body)
+        self.body_canvas.bind("<Button-1>", self._on_body_click)
 
     def set_rows(self, rows):
-        self.rows = rows
+        self.rows = [list(r) for r in rows]
         self._draw_body()
 
     def _col_x(self, width):
@@ -106,6 +133,10 @@ class ChannelTable(tk.Frame):
                           anchor="center", font=self.HEADER_FONT)
 
     def _draw_body(self, event=None):
+        self._finish_edit()
+        self._render_body()
+
+    def _render_body(self):
         c = self.body_canvas
         c.delete("all")
         w = c.winfo_width()
@@ -122,6 +153,70 @@ class ChannelTable(tk.Frame):
                 c.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=str(val),
                               anchor="center", font=self.FONT)
         c.configure(scrollregion=(0, 0, w, len(self.rows) * self.ROW_H))
+
+    # ---- 可编辑单元格 ----
+    def _on_body_click(self, event):
+        x = self.body_canvas.canvasx(event.x)
+        y = self.body_canvas.canvasy(event.y)
+        col = self._col_at(x)
+        row = self._row_at(y)
+        if row is None or col is None or col not in self.editable_columns:
+            if self._edit_entry is not None:
+                self._finish_edit()
+            return
+        self._start_edit(row, col)
+
+    def _col_at(self, x):
+        w = self.body_canvas.winfo_width()
+        xs = self._col_x(w)
+        for j in range(len(self.headers)):
+            x0 = xs[j]
+            x1 = xs[j + 1] if j + 1 < len(xs) else w
+            if x0 <= x < x1:
+                return j
+        return None
+
+    def _row_at(self, y):
+        row = int(y // self.ROW_H)
+        if 0 <= row < len(self.rows):
+            return row
+        return None
+
+    def _start_edit(self, row, col):
+        self._finish_edit()
+        w = self.body_canvas.winfo_width()
+        xs = self._col_x(w)
+        x0 = xs[col]
+        x1 = xs[col + 1] if col + 1 < len(xs) else w
+        y0 = row * self.ROW_H
+        y1 = y0 + self.ROW_H
+
+        entry = tk.Entry(self.body_canvas, justify="center", relief="solid", bd=1,
+                         font=self.FONT)
+        entry.insert(0, str(self.rows[row][col]))
+        self._edit_entry = entry
+        self._edit_row = row
+        self._edit_col = col
+        self.body_canvas.create_window(x0, y0, window=entry, anchor="nw",
+                                       width=x1 - x0, height=y1 - y0)
+        entry.bind("<Return>", lambda e: self._finish_edit())
+        entry.bind("<FocusOut>", lambda e: self._finish_edit())
+        entry.focus_set()
+        entry.select_range(0, "end")
+
+    def _finish_edit(self):
+        entry = self._edit_entry
+        if entry is None:
+            return
+        val = entry.get()
+        row, col = self._edit_row, self._edit_col
+        self._edit_entry = None
+        self._edit_row = None
+        self._edit_col = None
+        entry.destroy()
+        if row is not None and 0 <= row < len(self.rows) and 0 <= col < len(self.rows[row]):
+            self.rows[row][col] = val
+        self._render_body()
 
 
 class QueueLogHandler(logging.Handler):
@@ -152,8 +247,9 @@ class SimTestApp(tk.Tk):
         self._setup_logging()
         self._build_ui()
 
-        # 默认填充从站1 输入通道
+        # 默认填充从站1 输入/输出通道
         self.update_input_channels(build_input_channel_rows())
+        self.update_output_channels(build_output_channel_rows())
 
         self.after(100, self._poll_log_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -240,19 +336,22 @@ class SimTestApp(tk.Tk):
         slave1.columnconfigure(1, weight=1, uniform="slave1")
 
         self.input_table = self._build_channel_block(slave1, "输入通道", INPUT_HEADERS, 0)
-        self.output_table = self._build_channel_block(slave1, "输出通道", OUTPUT_HEADERS, 1)
+        self.output_table = self._build_channel_block(slave1, "输出通道", OUTPUT_HEADERS, 1,
+                                                      editable_columns=(5,))
 
         # 从站2/3/4：空白页
         for name in ("从站2", "从站3", "从站4"):
             notebook.add(ttk.Frame(notebook), text=name)
 
-    def _build_channel_block(self, parent, title, headers, column):
+    def _build_channel_block(self, parent, title, headers, column, editable_columns=()):
         block = tk.LabelFrame(parent, text=title, bd=2)
         block.grid(row=0, column=column, sticky="nsew", padx=2, pady=2)
         block.rowconfigure(0, weight=1)
         block.columnconfigure(0, weight=1)
 
-        table = ChannelTable(block, headers, [HEADER_WIDTHS.get(h, 110) for h in headers])
+        table = ChannelTable(block, headers,
+                             [HEADER_WIDTHS.get(h, 110) for h in headers],
+                             editable_columns)
         table.grid(row=0, column=0, sticky="nsew")
         return table
 
