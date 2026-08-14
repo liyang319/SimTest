@@ -20,6 +20,7 @@ HELP = """可用命令：
   read_coils <addr> [count]         读线圈
   read_di   <addr> [count]          读离散输入
   read_out                          读从站1 输出通道打包值（36寄存器=72字节）
+  read_out2                         读从站2 输出通道打包值（19寄存器=38字节）
   write_reg  <addr> <value>         写单个保持寄存器
   write_regs <addr> <v1> [v2 ...]   写多个保持寄存器
   write_coil <addr> <0|1>           写单个线圈
@@ -97,6 +98,9 @@ def run_command(client, device_id, line):
         return True
     if cmd in ("read_out", "read_output"):
         run_read_output(client, device_id)
+        return True
+    if cmd in ("read_out2", "read_output2"):
+        run_read_output_slave2(client, device_id)
         return True
 
     try:
@@ -229,6 +233,34 @@ def run_read_output(client, device_id):
     ao = []
     for k in range(32):
         base = 8 + 2 * k
+        hi = data[base] if base < len(data) else 0
+        lo = data[base + 1] if base + 1 < len(data) else 0
+        ao.append((hi << 8) | lo)
+    print(f"  AO 通道值: {ao}")
+
+
+def run_read_output_slave2(client, device_id):
+    """读取从站2 输出通道打包值（19 个寄存器 = 38 字节）并打印。"""
+    resp = client.read_holding_registers(0, count=19, device_id=device_id)
+    if resp.isError():
+        print(f"  读取失败: {resp}")
+        return
+    regs = resp.registers
+    data = b"".join(r.to_bytes(2, "big") for r in regs)
+    print(f"  寄存器({len(regs)}个): {regs}")
+    print(f"  数据({len(data)}字节): {data.hex(' ')}")
+    # DO: 48 通道，按位打包（8 通道/字节，共 6 字节）
+    do_on = []
+    for i in range(6):
+        byte = data[i] if i < len(data) else 0
+        for j in range(8):
+            if (byte >> j) & 1:
+                do_on.append(i * 8 + j + 1)
+    print(f"  DO 值为1的通道: {do_on}")
+    # AO: 16 通道，2 字节/通道（16 位大端）
+    ao = []
+    for k in range(16):
+        base = 6 + 2 * k
         hi = data[base] if base < len(data) else 0
         lo = data[base + 1] if base + 1 < len(data) else 0
         ao.append((hi << 8) | lo)

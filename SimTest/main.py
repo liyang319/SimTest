@@ -79,6 +79,12 @@ SLAVE1_AI_CHANNELS = 32
 SLAVE2_DI_CHANNELS = 48
 SLAVE2_AI_CHANNELS = 8
 
+# 从站1/从站2 输出通道 DO/AO 通道数
+SLAVE1_DO_CHANNELS = 64
+SLAVE1_AO_CHANNELS = 32
+SLAVE2_DO_CHANNELS = 48
+SLAVE2_AO_CHANNELS = 16
+
 # 从站2 输入通道默认配置：机箱编号固定为 2
 # (板卡型号, 槽位号, 起始通道号, 结束通道号)
 SLAVE2_INPUT_BOARDS = [
@@ -95,6 +101,27 @@ def build_slave2_input_channel_rows():
     for model, slot, start_ch, end_ch in SLAVE2_INPUT_BOARDS:
         for channel in range(start_ch, end_ch + 1):
             rows.append([idx, INPUT_CHASSIS, model, slot, channel, 0])
+            idx += 1
+    return rows
+
+
+# 从站2 输出通道默认配置：机箱编号固定为 2
+# (板卡型号, 槽位号, 起始通道号, 结束通道号)
+SLAVE2_OUTPUT_BOARDS = [
+    ("NI-9403-DO", 2, 1, 32),   # 32 DO
+    ("NI-9476-DO", 3, 1, 16),   # 16 DO
+    ("NI-9266-AO", 5, 1, 8),    # 8 AO
+    ("NI-9266-AO", 6, 1, 8),    # 8 AO
+]
+
+
+def build_slave2_output_channel_rows():
+    """生成从站2 输出通道行数据，输出值默认为 0。"""
+    rows = []
+    idx = 1
+    for model, slot, start_ch, end_ch in SLAVE2_OUTPUT_BOARDS:
+        for channel in range(start_ch, end_ch + 1):
+            rows.append([idx, OUTPUT_CHASSIS, model, slot, channel, 0])
             idx += 1
     return rows
 
@@ -295,6 +322,7 @@ class SimTestApp(tk.Tk):
         self.update_input_channels(build_input_channel_rows())
         self.update_output_channels(build_output_channel_rows())
         self.slave2_input_table.set_rows(build_slave2_input_channel_rows())
+        self.slave2_output_table.set_rows(build_slave2_output_channel_rows())
 
         self.after(100, self._poll_log_queue)
         self.after(100, self._poll_data_queue)
@@ -534,28 +562,34 @@ class SimTestApp(tk.Tk):
         self.data_queue.put((slave_index, values))
 
     def _on_read_holding_registers(self, client_host, address, count):
-        """client 读保持寄存器，依据 IP 返回从站1 输出通道打包值。"""
-        slave1_ip = self.slaves[0]["ip"] if self.slaves else None
-        if slave1_ip is None or client_host != slave1_ip:
+        """client 读保持寄存器，依据 IP 返回对应从站的输出通道打包值。"""
+        slave_index = self._find_slave(client_host)
+        if slave_index == 1:
+            full = self._pack_do_ao_registers(self.output_table.rows,
+                                              SLAVE1_DO_CHANNELS, SLAVE1_AO_CHANNELS)
+        elif slave_index == 2:
+            full = self._pack_do_ao_registers(self.slave2_output_table.rows,
+                                              SLAVE2_DO_CHANNELS, SLAVE2_AO_CHANNELS)
+        else:
             return None
-        full = self._pack_output_registers()  # 36 个寄存器 = 72 字节
         return full[address:address + count]
 
-    def _pack_output_registers(self):
-        """把 96 个输出通道打包成 36 个寄存器（72 字节）。
+    def _pack_do_ao_registers(self, rows, do_channels, ao_channels):
+        """把 DO（位打包）+ AO（16 位大端）通道打包成寄存器。
 
-        前 64 个 DO 通道按位打包（8 通道/字节，共 8 字节 = 4 寄存器），
-        后 32 个 AO 通道各占 2 字节（16 位大端，共 64 字节 = 32 寄存器）。
+        do_channels 个 DO 按位打包（8 通道/字节），
+        ao_channels 个 AO 各占 2 字节（16 位大端）。
         """
-        buf = bytearray(72)
-        for i in range(64):
-            if self._to_bit(self.output_table.rows[i][-1]):
+        do_bytes = do_channels // 8
+        buf = bytearray(do_bytes + ao_channels * 2)
+        for i in range(do_channels):
+            if self._to_bit(rows[i][-1]):
                 buf[i // 8] |= 1 << (i % 8)
-        for k in range(32):
-            val = self._to_int(self.output_table.rows[64 + k][-1])
-            buf[8 + 2 * k] = (val >> 8) & 0xFF
-            buf[8 + 2 * k + 1] = val & 0xFF
-        return [int.from_bytes(buf[i:i + 2], "big") for i in range(0, 72, 2)]
+        for k in range(ao_channels):
+            val = self._to_int(rows[do_channels + k][-1])
+            buf[do_bytes + 2 * k] = (val >> 8) & 0xFF
+            buf[do_bytes + 2 * k + 1] = val & 0xFF
+        return [int.from_bytes(buf[i:i + 2], "big") for i in range(0, len(buf), 2)]
 
     @staticmethod
     def _parse_di_ai_bytes(data, di_channels, ai_channels):
