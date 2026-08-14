@@ -447,6 +447,7 @@ class SimTestApp(tk.Tk):
             on_data_received=self._on_data_received,
             on_data_sent=self._on_data_sent,
             on_write_registers=self._on_write_registers,
+            on_read_holding_registers=self._on_read_holding_registers,
         )
         if self.modbus_server.start():
             self.server_running = True
@@ -482,10 +483,38 @@ class SimTestApp(tk.Tk):
         if slave1_ip is None or client_host != slave1_ip:
             return
         values = []
-        for reg in registers:
+        for reg in reversed(registers):
             for bit in range(16):
                 values.append((reg >> bit) & 1)
         self.data_queue.put(values[:96])
+
+    def _on_read_holding_registers(self, client_host, address, count):
+        """client 读保持寄存器，依据 IP 返回从站1 输出通道打包值。"""
+        slave1_ip = self.slaves[0]["ip"] if self.slaves else None
+        if slave1_ip is None or client_host != slave1_ip:
+            return None
+        full = self._pack_output_values()  # 6 个寄存器 = 96 位
+        return full[address:address + count]
+
+    def _pack_output_values(self):
+        """把 96 个输出通道的“输出值”打包成 6 个寄存器（大端位序）。
+
+        第 0 位=通道1（最低位）、第 95 位=通道96（最高位）。
+        序列化成 12 字节时，通道1 落在最后一个字节的最低位，通道96 落在第一个字节的最高位。
+        """
+        regs = [0] * 6
+        for i, row in enumerate(self.output_table.rows[:96]):
+            if self._to_bit(row[-1]):
+                regs[5 - (i // 16)] |= 1 << (i % 16)
+        return regs
+
+    @staticmethod
+    def _to_bit(val):
+        """把输出值解释成 0/1。"""
+        try:
+            return 1 if int(val) else 0
+        except (ValueError, TypeError):
+            return 0
 
     def _find_slave(self, client_host):
         """根据来源 IP 匹配从站编号（1 起），未匹配返回 None。"""

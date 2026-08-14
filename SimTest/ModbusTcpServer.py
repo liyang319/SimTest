@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import logging
 import threading
 
@@ -9,6 +10,9 @@ from pymodbus.simulator import SimData, SimDevice
 from pymodbus.simulator.simdata import DataType
 
 logger = logging.getLogger("SimTest")
+
+# 当前请求的 client host（供 action 回调读取，按 asyncio 任务隔离避免并发串扰）
+_client_host_var = contextvars.ContextVar("client_host", default=None)
 
 
 class _AddrRequestHandler(ServerRequestHandler):
@@ -36,11 +40,15 @@ class _AddrRequestHandler(ServerRequestHandler):
         return super().callback_data(data, addr)
 
     async def handle_request(self):
-        if self._on_write and isinstance(self.last_pdu, WriteMultipleRegistersRequest):
-            host = self._client_host(None)
-            if host:
-                self._on_write(host, self.last_pdu.address, list(self.last_pdu.registers))
-        return await super().handle_request()
+        host = self._client_host(None)
+        token = _client_host_var.set(host)
+        try:
+            if self._on_write and isinstance(self.last_pdu, WriteMultipleRegistersRequest):
+                if host:
+                    self._on_write(host, self.last_pdu.address, list(self.last_pdu.registers))
+            return await super().handle_request()
+        finally:
+            _client_host_var.reset(token)
 
 
 class _AddrTcpServer(_PymodbusTcpServer):
@@ -67,16 +75,19 @@ class ModbusTcpServer:
     - on_data_sent(data: bytes)：向 client 发送响应时回调
     - on_write_registers(client_host: str, address: int, registers: list[int])：
       client 写入多个保持寄存器时回调
+    - on_read_holding_registers(client_host: str, address: int, count: int) -> list[int] | None：
+      client 读保持寄存器时回调，返回要回给 client 的寄存器值（None 表示用默认存储）
     """
 
     def __init__(self, host="0.0.0.0", port=5020,
                  on_data_received=None, on_data_sent=None,
-                 on_write_registers=None):
+                 on_write_registers=None, on_read_holding_registers=None):
         self.host = host
         self.port = port
         self.on_data_received = on_data_received
         self.on_data_sent = on_data_sent
         self.on_write_registers = on_write_registers
+        self.on_read_holding_registers = on_read_holding_registers
 
         self._server = None
         self._loop = None
@@ -92,7 +103,24 @@ class ModbusTcpServer:
         holding = [SimData(0, count=size, values=0, datatype=DataType.REGISTERS)]
         inputs = [SimData(0, count=size, values=0, datatype=DataType.REGISTERS)]
         # simdata 顺序：(coils, discrete inputs, holding registers, input registers)
-        return SimDevice(0, simdata=(coils, discrete, holding, inputs))
+        return SimDevice(0, simdata=(coils, discrete, holding, inputs), action=self._action)
+
+    async def _action(self, func_code, start_address, address, count, registers, values):
+        """读保持寄存器时，用回调提供的动态值替换返回数据。"""
+        if values is not None or func_code != 3 or not self.on_read_holding_registers:
+            return None
+        host = _client_host_var.get()
+        if not host:
+            return None
+        data = self.on_read_holding_registers(host, address, count)
+        if not data:
+            return None
+        offset = address - start_address
+        for i, val in enumerate(data):
+            idx = offset + i
+            if 0 <= idx < len(registers):
+                registers[idx] = val
+        return None
 
     def _trace_packet(self, sending, data):
         # 接收侧由 _AddrRequestHandler 处理（含 client 地址），这里只处理发送

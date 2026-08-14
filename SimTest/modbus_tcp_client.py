@@ -19,6 +19,7 @@ HELP = """可用命令：
   read_ir   <addr> [count]          读输入寄存器（对应模拟量输入/当前值）
   read_coils <addr> [count]         读线圈
   read_di   <addr> [count]          读离散输入
+  read_out                          读从站1 输出通道打包值（96位=12字节）
   write_reg  <addr> <value>         写单个保持寄存器
   write_regs <addr> <v1> [v2 ...]   写多个保持寄存器
   write_coil <addr> <0|1>           写单个线圈
@@ -89,6 +90,9 @@ def run_command(client, device_id, line):
         interval = float(parts[1]) if len(parts) > 1 else 0.2
         run_loop_send(client, device_id, interval)
         return True
+    if cmd in ("read_out", "read_output"):
+        run_read_output(client, device_id)
+        return True
 
     try:
         if cmd == "read_hr":
@@ -144,7 +148,7 @@ def run_loop_send(client, device_id, interval):
         while True:
             regs = [0] * 6
             bit = cycle % 96
-            regs[bit // 16] = 1 << (bit % 16)
+            regs[5 - (bit // 16)] = 1 << (bit % 16)
             resp = client.write_registers(0, regs, device_id=device_id)
             if resp.isError():
                 print(f"  第 {cycle} 次写入失败: {resp}")
@@ -156,6 +160,24 @@ def run_loop_send(client, device_id, interval):
         print("\n  循环发送已停止")
     finally:
         client.transaction.trace_packet = saved_trace
+
+
+def run_read_output(client, device_id):
+    """读取从站1 输出通道打包值（6 个寄存器 = 96 位 = 12 字节）并打印。"""
+    resp = client.read_holding_registers(0, count=6, device_id=device_id)
+    if resp.isError():
+        print(f"  读取失败: {resp}")
+        return
+    regs = resp.registers
+    data = b"".join(r.to_bytes(2, "big") for r in regs)
+    print(f"  寄存器: {regs}")
+    print(f"  数据(12字节): {data.hex(' ')}")
+    bits = []
+    for r in reversed(regs):
+        for bit in range(16):
+            bits.append((r >> bit) & 1)
+    on_channels = [i + 1 for i, b in enumerate(bits) if b]
+    print(f"  值为1的通道: {on_channels}")
 
 
 def run_demo(client, device_id):
