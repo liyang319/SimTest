@@ -16,12 +16,16 @@ _client_host_var = contextvars.ContextVar("client_host", default=None)
 
 
 class _AddrRequestHandler(ServerRequestHandler):
-    """在收到数据时，把 client 的 IP 地址一并回调。"""
+    """在收到数据/连接变化时，把 client 的 IP 地址一并回调。"""
 
-    def __init__(self, owner, trace_packet, trace_pdu, trace_connect, on_data, on_write):
+    def __init__(self, owner, trace_packet, trace_pdu, trace_connect,
+                 on_data, on_write, on_connect, on_disconnect):
         super().__init__(owner, trace_packet, trace_pdu, trace_connect)
         self._on_data = on_data
         self._on_write = on_write
+        self._on_connect = on_connect
+        self._on_disconnect = on_disconnect
+        self._client_ip = None
 
     def _client_host(self, addr):
         if addr:
@@ -31,6 +35,17 @@ class _AddrRequestHandler(ServerRequestHandler):
             if peername:
                 return peername[0]
         return None
+
+    def callback_connected(self):
+        self._client_ip = self._client_host(None)
+        if self._on_connect and self._client_ip:
+            self._on_connect(self._client_ip)
+        super().callback_connected()
+
+    def callback_disconnected(self, exc=None):
+        if self._on_disconnect and self._client_ip:
+            self._on_disconnect(self._client_ip)
+        super().callback_disconnected(exc)
 
     def callback_data(self, data, addr=None):
         if self._on_data:
@@ -54,15 +69,18 @@ class _AddrRequestHandler(ServerRequestHandler):
 class _AddrTcpServer(_PymodbusTcpServer):
     """使用自定义 request handler 以捕获 client 地址。"""
 
-    def __init__(self, *args, on_data=None, on_write=None, **kwargs):
+    def __init__(self, *args, on_data=None, on_write=None,
+                 on_connect=None, on_disconnect=None, **kwargs):
         self._on_data = on_data
         self._on_write = on_write
+        self._on_connect = on_connect
+        self._on_disconnect = on_disconnect
         super().__init__(*args, **kwargs)
 
     def callback_new_connection(self):
         return _AddrRequestHandler(
             self, self.trace_packet, self.trace_pdu, self.trace_connect,
-            self._on_data, self._on_write,
+            self._on_data, self._on_write, self._on_connect, self._on_disconnect,
         )
 
 
@@ -77,17 +95,22 @@ class ModbusTcpServer:
       client 写入多个保持寄存器时回调
     - on_read_holding_registers(client_host: str, address: int, count: int) -> list[int] | None：
       client 读保持寄存器时回调，返回要回给 client 的寄存器值（None 表示用默认存储）
+    - on_connect(client_host: str)：client 建立连接时回调
+    - on_disconnect(client_host: str)：client 断开连接时回调
     """
 
     def __init__(self, host="0.0.0.0", port=5020,
                  on_data_received=None, on_data_sent=None,
-                 on_write_registers=None, on_read_holding_registers=None):
+                 on_write_registers=None, on_read_holding_registers=None,
+                 on_connect=None, on_disconnect=None):
         self.host = host
         self.port = port
         self.on_data_received = on_data_received
         self.on_data_sent = on_data_sent
         self.on_write_registers = on_write_registers
         self.on_read_holding_registers = on_read_holding_registers
+        self.on_connect = on_connect
+        self.on_disconnect = on_disconnect
 
         self._server = None
         self._loop = None
@@ -163,6 +186,8 @@ class ModbusTcpServer:
             trace_packet=self._trace_packet,
             on_data=self.on_data_received,
             on_write=self.on_write_registers,
+            on_connect=self.on_connect,
+            on_disconnect=self.on_disconnect,
         )
         self._ready.set()
         await self._server.serve_forever()

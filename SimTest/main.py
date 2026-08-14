@@ -315,6 +315,7 @@ class SimTestApp(tk.Tk):
 
         self.log_queue = queue.Queue()
         self.data_queue = queue.Queue()
+        self.connection_queue = queue.Queue()
         self._setup_logging()
         self._build_ui()
 
@@ -326,6 +327,7 @@ class SimTestApp(tk.Tk):
 
         self.after(100, self._poll_log_queue)
         self.after(100, self._poll_data_queue)
+        self.after(100, self._poll_connection_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         logger.info("程序启动")
@@ -359,6 +361,18 @@ class SimTestApp(tk.Tk):
         if latest is not None:
             self._apply_input_values(*latest)
         self.after(100, self._poll_data_queue)
+
+    def _poll_connection_queue(self):
+        latest = None
+        try:
+            while True:
+                latest = self.connection_queue.get_nowait()
+        except queue.Empty:
+            pass
+        if latest is not None:
+            slave, connected = latest
+            self._set_slave_indicator(slave - 1, "green" if connected else "red")
+        self.after(100, self._poll_connection_queue)
 
     def _apply_input_values(self, slave_index, values):
         """用接收到的数据刷新对应从站的输入通道当前值。"""
@@ -395,16 +409,40 @@ class SimTestApp(tk.Tk):
         frame = tk.LabelFrame(self, text="参数配置", bd=2)
         frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 5))
 
-        self.select_btn = ttk.Button(frame, text="配置文件",
-                                     command=self._select_config_file)
-        self.select_btn.pack(side="left", padx=(8, 4), pady=8)
+        self.slave_ip_vars = []
+        self.slave_ips = []
+        self.slave_indicators = []
+        default_ips = ("192.168.1.1", "192.168.1.2", "192.168.1.3", "192.168.1.4")
 
-        self.config_label = ttk.Label(frame, text="未选择配置文件")
-        self.config_label.pack(side="left", padx=4, pady=8)
+        for i in range(4):
+            ttk.Label(frame, text=f"从站{i + 1}").pack(side="left", padx=(8, 2), pady=8)
+            var = tk.StringVar(value=default_ips[i])
+            var.trace_add("write", lambda *a, idx=i: self._on_ip_changed(idx))
+            self.slave_ip_vars.append(var)
+            self.slave_ips.append(default_ips[i])
+            ttk.Entry(frame, textvariable=var, width=13).pack(side="left", padx=2, pady=8)
+            canvas, oval = self._make_indicator(frame)
+            self.slave_indicators.append((canvas, oval))
 
         self.server_btn = ttk.Button(frame, text="启动服务",
                                      command=self._toggle_server)
-        self.server_btn.pack(side="left", padx=(24, 8), pady=8)
+        self.server_btn.pack(side="left", padx=(20, 8), pady=8)
+
+    def _make_indicator(self, parent):
+        """创建一个红色圆形指示灯，返回 (canvas, oval_id)。"""
+        canvas = tk.Canvas(parent, width=16, height=16, highlightthickness=0, bd=0)
+        canvas.pack(side="left", padx=4, pady=8)
+        oval = canvas.create_oval(3, 3, 13, 13, fill="red", outline="")
+        return canvas, oval
+
+    def _on_ip_changed(self, index):
+        """输入框 IP 变化时同步到线程安全的缓存列表。"""
+        self.slave_ips[index] = self.slave_ip_vars[index].get()
+
+    def _set_slave_indicator(self, index, color):
+        if 0 <= index < len(self.slave_indicators):
+            canvas, oval = self.slave_indicators[index]
+            canvas.itemconfig(oval, fill=color)
 
     def _build_slave_section(self):
         frame = tk.LabelFrame(self, text="从站设备", bd=2)
@@ -517,6 +555,8 @@ class SimTestApp(tk.Tk):
             on_data_sent=self._on_data_sent,
             on_write_registers=self._on_write_registers,
             on_read_holding_registers=self._on_read_holding_registers,
+            on_connect=self._on_client_connect,
+            on_disconnect=self._on_client_disconnect,
         )
         if self.modbus_server.start():
             self.server_running = True
@@ -530,6 +570,8 @@ class SimTestApp(tk.Tk):
             self.modbus_server.stop()
         self.server_running = False
         self.server_btn.config(text="启动服务")
+        for i in range(len(self.slave_indicators)):
+            self._set_slave_indicator(i, "red")
 
     def _on_data_received(self, data, client_host):
         """收到 client 数据回调，依据来源 IP 判断从站。"""
@@ -542,6 +584,20 @@ class SimTestApp(tk.Tk):
     def _on_data_sent(self, data):
         """向 client 发送数据回调。"""
         logger.info("发送数据: %s", data.hex())
+
+    def _on_client_connect(self, client_host):
+        """client 建立连接回调。"""
+        slave = self._find_slave(client_host)
+        if slave is not None:
+            self.connection_queue.put((slave, True))
+            logger.info("从站%d (%s) 已连接", slave, client_host)
+
+    def _on_client_disconnect(self, client_host):
+        """client 断开连接回调。"""
+        slave = self._find_slave(client_host)
+        if slave is not None:
+            self.connection_queue.put((slave, False))
+            logger.info("从站%d (%s) 已断开", slave, client_host)
 
     def _on_write_registers(self, client_host, address, registers):
         """client 写入多个保持寄存器，依据 IP 更新对应从站的输入通道当前值。
@@ -630,8 +686,8 @@ class SimTestApp(tk.Tk):
 
     def _find_slave(self, client_host):
         """根据来源 IP 匹配从站编号（1 起），未匹配返回 None。"""
-        for i, slave in enumerate(self.slaves, 1):
-            if slave.get("ip") == client_host:
+        for i, ip in enumerate(self.slave_ips, 1):
+            if ip == client_host:
                 return i
         return None
 
