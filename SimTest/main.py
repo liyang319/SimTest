@@ -116,6 +116,13 @@ class ChannelTable(tk.Frame):
         self.rows = [list(r) for r in rows]
         self._draw_body()
 
+    def update_last_column(self, values):
+        """用 values 更新每行最后一列（当前值/输出值）并重绘。"""
+        for i, val in enumerate(values):
+            if i < len(self.rows):
+                self.rows[i][-1] = val
+        self._render_body()
+
     def _col_x(self, width):
         total = sum(self.col_widths)
         xs = []
@@ -254,6 +261,7 @@ class SimTestApp(tk.Tk):
         self.modbus_server = None
 
         self.log_queue = queue.Queue()
+        self.data_queue = queue.Queue()
         self._setup_logging()
         self._build_ui()
 
@@ -262,6 +270,7 @@ class SimTestApp(tk.Tk):
         self.update_output_channels(build_output_channel_rows())
 
         self.after(100, self._poll_log_queue)
+        self.after(100, self._poll_data_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         logger.info("程序启动")
@@ -284,6 +293,21 @@ class SimTestApp(tk.Tk):
         except queue.Empty:
             pass
         self.after(100, self._poll_log_queue)
+
+    def _poll_data_queue(self):
+        latest = None
+        try:
+            while True:
+                latest = self.data_queue.get_nowait()
+        except queue.Empty:
+            pass
+        if latest is not None:
+            self._apply_input_values(latest)
+        self.after(100, self._poll_data_queue)
+
+    def _apply_input_values(self, values):
+        """用接收到的数据刷新输入通道当前值。"""
+        self.input_table.update_last_column(values)
 
     def _append_log(self, msg):
         self.log_text.configure(state="normal")
@@ -422,6 +446,7 @@ class SimTestApp(tk.Tk):
             port=SERVER_PORT,
             on_data_received=self._on_data_received,
             on_data_sent=self._on_data_sent,
+            on_write_registers=self._on_write_registers,
         )
         if self.modbus_server.start():
             self.server_running = True
@@ -447,6 +472,20 @@ class SimTestApp(tk.Tk):
     def _on_data_sent(self, data):
         """向 client 发送数据回调。"""
         logger.info("发送数据: %s", data.hex())
+
+    def _on_write_registers(self, client_host, address, registers):
+        """client 写入多个保持寄存器，依据 IP 更新从站1 输入通道当前值。
+
+        寄存器按位展开：第 0 位 = 通道1，第 1 位 = 通道2，…… 第 95 位 = 通道96。
+        """
+        slave1_ip = self.slaves[0]["ip"] if self.slaves else None
+        if slave1_ip is None or client_host != slave1_ip:
+            return
+        values = []
+        for reg in registers:
+            for bit in range(16):
+                values.append((reg >> bit) & 1)
+        self.data_queue.put(values[:96])
 
     def _find_slave(self, client_host):
         """根据来源 IP 匹配从站编号（1 起），未匹配返回 None。"""

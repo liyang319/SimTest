@@ -10,6 +10,7 @@
 
 import argparse
 import sys
+import time
 
 from pymodbus.client import ModbusTcpClient
 
@@ -22,6 +23,7 @@ HELP = """可用命令：
   write_regs <addr> <v1> [v2 ...]   写多个保持寄存器
   write_coil <addr> <0|1>           写单个线圈
   write_coils <addr> <v1> [v2 ...]  写多个线圈
+  loop [interval]                   循环发送 96 位数据（bit 依次走位）
   demo                              运行一次读写演示
   help                              显示本帮助
   quit / exit / q                   退出
@@ -83,6 +85,10 @@ def run_command(client, device_id, line):
     if cmd == "demo":
         run_demo(client, device_id)
         return True
+    if cmd in ("loop", "loop_send"):
+        interval = float(parts[1]) if len(parts) > 1 else 0.2
+        run_loop_send(client, device_id, interval)
+        return True
 
     try:
         if cmd == "read_hr":
@@ -122,6 +128,34 @@ def run_command(client, device_id, line):
     except Exception as exc:  # noqa: BLE001
         print(f"  执行失败: {exc}")
     return True
+
+
+def run_loop_send(client, device_id, interval):
+    """循环发送 96 位数据（bit 依次走位），用于测试 server 动态更新。
+
+    第 0 位对应通道1、第 1 位对应通道2、…… 第 95 位对应通道96。
+    每轮让一个 bit 置 1 并循环右移，直到 Ctrl+C 停止。
+    """
+    print(f"开始循环发送 96 位数据，间隔 {interval}s（Ctrl+C 停止）")
+    saved_trace = client.transaction.trace_packet
+    client.transaction.trace_packet = lambda sending, data: data  # 循环时关闭原始报文打印
+    cycle = 0
+    try:
+        while True:
+            regs = [0] * 6
+            bit = cycle % 96
+            regs[bit // 16] = 1 << (bit % 16)
+            resp = client.write_registers(0, regs, device_id=device_id)
+            if resp.isError():
+                print(f"  第 {cycle} 次写入失败: {resp}")
+            else:
+                print(f"  第 {cycle} 次: 通道 {bit + 1} = 1")
+            cycle += 1
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\n  循环发送已停止")
+    finally:
+        client.transaction.trace_packet = saved_trace
 
 
 def run_demo(client, device_id):

@@ -2,6 +2,7 @@ import asyncio
 import logging
 import threading
 
+from pymodbus.pdu.register_message import WriteMultipleRegistersRequest
 from pymodbus.server import ModbusTcpServer as _PymodbusTcpServer
 from pymodbus.server.requesthandler import ServerRequestHandler
 from pymodbus.simulator import SimData, SimDevice
@@ -13,9 +14,10 @@ logger = logging.getLogger("SimTest")
 class _AddrRequestHandler(ServerRequestHandler):
     """在收到数据时，把 client 的 IP 地址一并回调。"""
 
-    def __init__(self, owner, trace_packet, trace_pdu, trace_connect, on_data):
+    def __init__(self, owner, trace_packet, trace_pdu, trace_connect, on_data, on_write):
         super().__init__(owner, trace_packet, trace_pdu, trace_connect)
         self._on_data = on_data
+        self._on_write = on_write
 
     def _client_host(self, addr):
         if addr:
@@ -33,17 +35,26 @@ class _AddrRequestHandler(ServerRequestHandler):
                 self._on_data(data, host)
         return super().callback_data(data, addr)
 
+    async def handle_request(self):
+        if self._on_write and isinstance(self.last_pdu, WriteMultipleRegistersRequest):
+            host = self._client_host(None)
+            if host:
+                self._on_write(host, self.last_pdu.address, list(self.last_pdu.registers))
+        return await super().handle_request()
+
 
 class _AddrTcpServer(_PymodbusTcpServer):
     """使用自定义 request handler 以捕获 client 地址。"""
 
-    def __init__(self, *args, on_data=None, **kwargs):
+    def __init__(self, *args, on_data=None, on_write=None, **kwargs):
         self._on_data = on_data
+        self._on_write = on_write
         super().__init__(*args, **kwargs)
 
     def callback_new_connection(self):
         return _AddrRequestHandler(
-            self, self.trace_packet, self.trace_pdu, self.trace_connect, self._on_data
+            self, self.trace_packet, self.trace_pdu, self.trace_connect,
+            self._on_data, self._on_write,
         )
 
 
@@ -54,14 +65,18 @@ class ModbusTcpServer:
     回调接口：
     - on_data_received(data: bytes, client_host: str)：收到 client 请求时回调
     - on_data_sent(data: bytes)：向 client 发送响应时回调
+    - on_write_registers(client_host: str, address: int, registers: list[int])：
+      client 写入多个保持寄存器时回调
     """
 
     def __init__(self, host="0.0.0.0", port=5020,
-                 on_data_received=None, on_data_sent=None):
+                 on_data_received=None, on_data_sent=None,
+                 on_write_registers=None):
         self.host = host
         self.port = port
         self.on_data_received = on_data_received
         self.on_data_sent = on_data_sent
+        self.on_write_registers = on_write_registers
 
         self._server = None
         self._loop = None
@@ -119,6 +134,7 @@ class ModbusTcpServer:
             address=(self.host, self.port),
             trace_packet=self._trace_packet,
             on_data=self.on_data_received,
+            on_write=self.on_write_registers,
         )
         self._ready.set()
         await self._server.serve_forever()
