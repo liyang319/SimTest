@@ -3,7 +3,8 @@
 用于连接 SimTest 模拟软件的 Modbus TCP server，进行数据的读写测试。
 
 用法：
-    python modbus_tcp_client.py [--host 127.0.0.1] [--port 5020] [--device-id 1]
+    python modbus_tcp_client.py [服务器IP] [端口] [--device-id 1]
+    例：python modbus_tcp_client.py 192.168.1.1 1502
 
 进入后输入 help 查看可用命令。
 """
@@ -285,8 +286,8 @@ def run_demo(client, device_id):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Modbus TCP 客户端模拟器")
-    parser.add_argument("--host", default="127.0.0.1", help="服务器地址（默认 127.0.0.1）")
-    parser.add_argument("--port", type=int, default=5020, help="服务器端口（默认 5020）")
+    parser.add_argument("host", nargs="?", default="127.0.0.1", help="服务器地址（默认 127.0.0.1）")
+    parser.add_argument("port", nargs="?", type=int, default=1502, help="服务器端口（默认 1502）")
     parser.add_argument("--device-id", type=int, default=1, help="从站设备 ID（默认 1）")
     args = parser.parse_args(argv)
 

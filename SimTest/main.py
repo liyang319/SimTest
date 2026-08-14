@@ -10,9 +10,9 @@ from ModbusTcpServer import ModbusTcpServer
 
 logger = logging.getLogger("SimTest")
 
-# Modbus TCP 服务默认地址（端口 5020 避免与系统 502 冲突，后续可由配置文件覆盖）
+# Modbus TCP 服务监听地址与默认端口
 SERVER_HOST = "0.0.0.0"
-SERVER_PORT = 5020
+SERVER_PORT = 1502
 
 # 输入/输出通道表头
 INPUT_HEADERS = ("序号", "机箱编号", "板卡型号", "槽位号", "通道号", "当前值")
@@ -442,6 +442,10 @@ class SimTestApp(tk.Tk):
             canvas, oval = self._make_indicator(frame)
             self.slave_indicators.append((canvas, oval))
 
+        ttk.Label(frame, text="端口号").pack(side="left", padx=(24, 2), pady=8)
+        self.port_var = tk.StringVar(value=str(SERVER_PORT))
+        ttk.Entry(frame, textvariable=self.port_var, width=6).pack(side="left", padx=2, pady=8)
+
         self.server_btn = ttk.Button(frame, text="启动服务",
                                      command=self._toggle_server,
                                      style="Accent.TButton")
@@ -562,9 +566,14 @@ class SimTestApp(tk.Tk):
         """启动 Modbus TCP server。"""
         if self.server_running:
             return
+        try:
+            port = int(self.port_var.get())
+        except ValueError:
+            logger.error("端口号无效: %s", self.port_var.get())
+            return
         self.modbus_server = ModbusTcpServer(
             host=SERVER_HOST,
-            port=SERVER_PORT,
+            port=port,
             on_data_received=self._on_data_received,
             on_data_sent=self._on_data_sent,
             on_write_registers=self._on_write_registers,
