@@ -391,11 +391,28 @@ class SimTestApp(tk.Tk):
     # ------------------------------------------------------------------ #
     # UI 构建
     # ------------------------------------------------------------------ #
+    def _setup_styles(self):
+        """配置 ttk 样式：用可定制的 clam 主题统一 tab 与按钮外观。"""
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        tab_font = tkfont.nametofont("TkDefaultFont").copy()
+        tab_font.configure(size=12)
+        style.configure("TNotebook.Tab", padding=(20, 4), font=tab_font)
+        style.map("TNotebook.Tab",
+                  background=[("selected", "#0078d7")],
+                  foreground=[("selected", "#ffffff")],
+                  padding=[("selected", (20, 4))],
+                  font=[("selected", tab_font)])
+        style.configure("Accent.TButton", background="#0078d7", foreground="#ffffff")
+        style.map("Accent.TButton",
+                  background=[("active", "#106ebe"), ("pressed", "#005a9e")])
+
     def _build_ui(self):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(2, weight=3)  # 从站设备 区域可拉伸
         self.rowconfigure(3, weight=1)  # 系统日志 区域可拉伸
 
+        self._setup_styles()
         self._build_title()
         self._build_config_section()
         self._build_slave_section()
@@ -426,7 +443,8 @@ class SimTestApp(tk.Tk):
             self.slave_indicators.append((canvas, oval))
 
         self.server_btn = ttk.Button(frame, text="启动服务",
-                                     command=self._toggle_server)
+                                     command=self._toggle_server,
+                                     style="Accent.TButton")
         self.server_btn.pack(side="left", padx=(20, 8), pady=8)
 
     def _make_indicator(self, parent):
@@ -450,17 +468,6 @@ class SimTestApp(tk.Tk):
         frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
-
-        style = ttk.Style(self)
-        # 负左右 padding 抵消 macOS aqua 主题 Notebook 客户端区域自带的 9px 边框，
-        # 上下保持默认，避免顶部的 tab 标签被内容区遮挡
-        style.configure("TNotebook", padding=(-9, 0))
-
-        # Windows 下默认主题的 tab 标签偏小偏挤，加大内边距与字号让显示更舒展
-        if os.name == "nt":
-            tab_font = tkfont.nametofont("TkDefaultFont").copy()
-            tab_font.configure(size=12)
-            style.configure("TNotebook.Tab", padding=(20, 8), font=tab_font)
 
         notebook = ttk.Notebook(frame)
         notebook.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
