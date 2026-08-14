@@ -3,6 +3,7 @@ import logging
 import os
 import queue
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, ttk
 
 from ModbusTcpServer import ModbusTcpServer
@@ -454,6 +455,12 @@ class SimTestApp(tk.Tk):
         # 负左右 padding 抵消 macOS aqua 主题 Notebook 客户端区域自带的 9px 边框，
         # 上下保持默认，避免顶部的 tab 标签被内容区遮挡
         style.configure("TNotebook", padding=(-9, 0))
+
+        # Windows 下默认主题的 tab 标签偏小偏挤，加大内边距与字号让显示更舒展
+        if os.name == "nt":
+            tab_font = tkfont.nametofont("TkDefaultFont").copy()
+            tab_font.configure(size=12)
+            style.configure("TNotebook.Tab", padding=(20, 8), font=tab_font)
 
         notebook = ttk.Notebook(frame)
         notebook.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
