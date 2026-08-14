@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import queue
@@ -248,6 +249,8 @@ class SimTestApp(tk.Tk):
 
         self.server_running = False
         self.config_path = None
+        self.config = None
+        self.slaves = []
         self.modbus_server = None
 
         self.log_queue = queue.Queue()
@@ -389,8 +392,17 @@ class SimTestApp(tk.Tk):
         self.load_config_file(path)
 
     def load_config_file(self, path):
-        """预留接口：解析配置文件（JSON），后续实现。"""
-        logger.info("配置文件已选择: %s（解析逻辑待实现）", path)
+        """解析配置文件（JSON），加载从站 ip/port 配置。"""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                self.config = json.load(f)
+            self.slaves = self.config.get("slaves", [])
+            logger.info("配置文件已加载: %s，从站数量: %d", path, len(self.slaves))
+            for i, slave in enumerate(self.slaves, 1):
+                logger.info("从站%d: %s:%s", i, slave.get("ip"), slave.get("port"))
+        except Exception as exc:
+            logger.error("配置文件加载失败: %s", exc)
+            self.slaves = []
 
     # ------------------------------------------------------------------ #
     # 参数配置 —— 启动/停止服务
@@ -424,13 +436,24 @@ class SimTestApp(tk.Tk):
         self.server_running = False
         self.server_btn.config(text="启动服务")
 
-    def _on_data_received(self, data):
-        """收到 client 数据回调。"""
-        logger.info("收到数据: %s", data.hex())
+    def _on_data_received(self, data, client_host):
+        """收到 client 数据回调，依据来源 IP 判断从站。"""
+        slave = self._find_slave(client_host)
+        if slave is not None:
+            logger.info("从站%d (%s) 收到数据: %s", slave, client_host, data.hex())
+        else:
+            logger.info("收到数据(未知来源 %s): %s", client_host, data.hex())
 
     def _on_data_sent(self, data):
         """向 client 发送数据回调。"""
         logger.info("发送数据: %s", data.hex())
+
+    def _find_slave(self, client_host):
+        """根据来源 IP 匹配从站编号（1 起），未匹配返回 None。"""
+        for i, slave in enumerate(self.slaves, 1):
+            if slave.get("ip") == client_host:
+                return i
+        return None
 
     # ------------------------------------------------------------------ #
     # 从站通道表 —— 数据刷新（预留接口）
