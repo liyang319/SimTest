@@ -25,6 +25,7 @@ HELP = """可用命令：
   write_coil <addr> <0|1>           写单个线圈
   write_coils <addr> <v1> [v2 ...]  写多个线圈
   loop [interval]                   循环发送 72 字节数据（DI 走位 + AI 递增）
+  loop2 [interval]                  循环发送从站2 输入数据（48 DI + 8 AI，22字节）
   demo                              运行一次读写演示
   help                              显示本帮助
   quit / exit / q                   退出
@@ -89,6 +90,10 @@ def run_command(client, device_id, line):
     if cmd in ("loop", "loop_send"):
         interval = float(parts[1]) if len(parts) > 1 else 0.2
         run_loop_send(client, device_id, interval)
+        return True
+    if cmd in ("loop2", "loop_slave2"):
+        interval = float(parts[1]) if len(parts) > 1 else 0.2
+        run_loop_send_slave2(client, device_id, interval)
         return True
     if cmd in ("read_out", "read_output"):
         run_read_output(client, device_id)
@@ -155,6 +160,40 @@ def run_loop_send(client, device_id, interval):
                 buf[8 + 2 * k] = (ai_val >> 8) & 0xFF
                 buf[8 + 2 * k + 1] = ai_val & 0xFF
             regs = [int.from_bytes(buf[i:i + 2], "big") for i in range(0, 72, 2)]
+            resp = client.write_registers(0, regs, device_id=device_id)
+            if resp.isError():
+                print(f"  第 {cycle} 次写入失败: {resp}")
+            else:
+                print(f"  第 {cycle} 次: DI 通道 {bit + 1} = 1, AI 值 = {ai_val}")
+            cycle += 1
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\n  循环发送已停止")
+    finally:
+        client.transaction.trace_packet = saved_trace
+
+
+def run_loop_send_slave2(client, device_id, interval):
+    """循环发送从站2 输入通道数据（48 DI 位打包 + 8 AI 16 位，共 22 字节）。
+
+    前 48 个 DI 通道按位打包（8 通道/字节，共 6 字节），
+    后 8 个 AI 通道各占 2 字节（16 位大端，共 16 字节）。
+    每轮让 DI 一个 bit 走位、AI 写入递增整数，直到 Ctrl+C 停止。
+    """
+    print(f"开始循环发送从站2 数据（48 DI 走位 + 8 AI 递增），间隔 {interval}s（Ctrl+C 停止）")
+    saved_trace = client.transaction.trace_packet
+    client.transaction.trace_packet = lambda sending, data: data  # 循环时关闭原始报文打印
+    cycle = 0
+    try:
+        while True:
+            buf = bytearray(22)
+            bit = cycle % 48
+            buf[bit // 8] = 1 << (bit % 8)
+            ai_val = cycle & 0xFFFF
+            for k in range(8):
+                buf[6 + 2 * k] = (ai_val >> 8) & 0xFF
+                buf[6 + 2 * k + 1] = ai_val & 0xFF
+            regs = [int.from_bytes(buf[i:i + 2], "big") for i in range(0, 22, 2)]
             resp = client.write_registers(0, regs, device_id=device_id)
             if resp.isError():
                 print(f"  第 {cycle} 次写入失败: {resp}")

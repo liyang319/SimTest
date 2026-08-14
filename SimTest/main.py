@@ -73,6 +73,32 @@ def build_output_channel_rows():
     return rows
 
 
+# 从站1/从站2 输入通道 DI/AI 通道数
+SLAVE1_DI_CHANNELS = 64
+SLAVE1_AI_CHANNELS = 32
+SLAVE2_DI_CHANNELS = 48
+SLAVE2_AI_CHANNELS = 8
+
+# 从站2 输入通道默认配置：机箱编号固定为 2
+# (板卡型号, 槽位号, 起始通道号, 结束通道号)
+SLAVE2_INPUT_BOARDS = [
+    ("NI-9403-DI", 1, 1, 32),   # 32 DI
+    ("NI-9476-DI", 3, 1, 16),   # 16 DI
+    ("NI-9203-AI", 4, 1, 8),    # 8 AI
+]
+
+
+def build_slave2_input_channel_rows():
+    """生成从站2 输入通道行数据，当前值默认为 0。"""
+    rows = []
+    idx = 1
+    for model, slot, start_ch, end_ch in SLAVE2_INPUT_BOARDS:
+        for channel in range(start_ch, end_ch + 1):
+            rows.append([idx, INPUT_CHASSIS, model, slot, channel, 0])
+            idx += 1
+    return rows
+
+
 class ChannelTable(tk.Frame):
     """带单元格边框线的可滚动表格（固定表头 + 可滚动数据区）。"""
 
@@ -265,9 +291,10 @@ class SimTestApp(tk.Tk):
         self._setup_logging()
         self._build_ui()
 
-        # 默认填充从站1 输入/输出通道
+        # 默认填充从站1/从站2 输入/输出通道
         self.update_input_channels(build_input_channel_rows())
         self.update_output_channels(build_output_channel_rows())
+        self.slave2_input_table.set_rows(build_slave2_input_channel_rows())
 
         self.after(100, self._poll_log_queue)
         self.after(100, self._poll_data_queue)
@@ -302,12 +329,15 @@ class SimTestApp(tk.Tk):
         except queue.Empty:
             pass
         if latest is not None:
-            self._apply_input_values(latest)
+            self._apply_input_values(*latest)
         self.after(100, self._poll_data_queue)
 
-    def _apply_input_values(self, values):
-        """用接收到的数据刷新输入通道当前值。"""
-        self.input_table.update_last_column(values)
+    def _apply_input_values(self, slave_index, values):
+        """用接收到的数据刷新对应从站的输入通道当前值。"""
+        if slave_index == 1:
+            self.input_table.update_last_column(values)
+        elif slave_index == 2:
+            self.slave2_input_table.update_last_column(values)
 
     def _append_log(self, msg):
         self.log_text.configure(state="normal")
@@ -373,8 +403,19 @@ class SimTestApp(tk.Tk):
         self.output_table = self._build_channel_block(slave1, "输出通道", OUTPUT_HEADERS, 1,
                                                       editable_columns=(5,))
 
-        # 从站2/3/4：空白页
-        for name in ("从站2", "从站3", "从站4"):
+        # 从站2：左右分栏（输入通道 / 输出通道）
+        slave2 = ttk.Frame(notebook)
+        notebook.add(slave2, text="从站2")
+        slave2.rowconfigure(0, weight=1)
+        slave2.columnconfigure(0, weight=1, uniform="slave2")
+        slave2.columnconfigure(1, weight=1, uniform="slave2")
+
+        self.slave2_input_table = self._build_channel_block(slave2, "输入通道", INPUT_HEADERS, 0)
+        self.slave2_output_table = self._build_channel_block(slave2, "输出通道", OUTPUT_HEADERS, 1,
+                                                              editable_columns=(5,))
+
+        # 从站3/4：空白页
+        for name in ("从站3", "从站4"):
             notebook.add(ttk.Frame(notebook), text=name)
 
     def _build_channel_block(self, parent, title, headers, column, editable_columns=()):
@@ -475,17 +516,22 @@ class SimTestApp(tk.Tk):
         logger.info("发送数据: %s", data.hex())
 
     def _on_write_registers(self, client_host, address, registers):
-        """client 写入多个保持寄存器，依据 IP 更新从站1 输入通道当前值。
+        """client 写入多个保持寄存器，依据 IP 更新对应从站的输入通道当前值。
 
-        数据为 72 字节：前 64 个 DI 通道按位打包（8 通道/字节），
-        后 32 个 AI 通道各占 2 字节（16 位大端）。
+        从站1：72 字节（64 DI 位打包 + 32 AI 16 位）；
+        从站2：22 字节（48 DI 位打包 + 8 AI 16 位）。
         """
-        slave1_ip = self.slaves[0]["ip"] if self.slaves else None
-        if slave1_ip is None or client_host != slave1_ip:
+        slave_index = self._find_slave(client_host)
+        if slave_index is None:
             return
         data = b"".join(r.to_bytes(2, "big") for r in registers)
-        values = self._parse_input_bytes(data)
-        self.data_queue.put(values)
+        if slave_index == 1:
+            values = self._parse_di_ai_bytes(data, SLAVE1_DI_CHANNELS, SLAVE1_AI_CHANNELS)
+        elif slave_index == 2:
+            values = self._parse_di_ai_bytes(data, SLAVE2_DI_CHANNELS, SLAVE2_AI_CHANNELS)
+        else:
+            return
+        self.data_queue.put((slave_index, values))
 
     def _on_read_holding_registers(self, client_host, address, count):
         """client 读保持寄存器，依据 IP 返回从站1 输出通道打包值。"""
@@ -512,15 +558,21 @@ class SimTestApp(tk.Tk):
         return [int.from_bytes(buf[i:i + 2], "big") for i in range(0, 72, 2)]
 
     @staticmethod
-    def _parse_input_bytes(data):
-        """把 72 字节解析成 96 个通道值（index i = 通道 i+1）。"""
+    def _parse_di_ai_bytes(data, di_channels, ai_channels):
+        """解析 DI（位打包）+ AI（16 位大端）字节数据为通道值列表。
+
+        data 前 di_channels//8 字节为 DI 位打包（8 通道/字节），
+        随后 ai_channels 个 AI 各占 2 字节（16 位大端）。
+        返回通道值列表（index i = 通道 i+1）。
+        """
+        di_bytes = di_channels // 8
         values = []
-        for i in range(8):
+        for i in range(di_bytes):
             byte = data[i] if i < len(data) else 0
             for j in range(8):
                 values.append((byte >> j) & 1)
-        for k in range(32):
-            base = 8 + 2 * k
+        for k in range(ai_channels):
+            base = di_bytes + 2 * k
             hi = data[base] if base < len(data) else 0
             lo = data[base + 1] if base + 1 < len(data) else 0
             values.append((hi << 8) | lo)
