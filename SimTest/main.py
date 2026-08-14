@@ -477,42 +477,68 @@ class SimTestApp(tk.Tk):
     def _on_write_registers(self, client_host, address, registers):
         """client 写入多个保持寄存器，依据 IP 更新从站1 输入通道当前值。
 
-        寄存器按位展开：第 0 位 = 通道1，第 1 位 = 通道2，…… 第 95 位 = 通道96。
+        数据为 72 字节：前 64 个 DI 通道按位打包（8 通道/字节），
+        后 32 个 AI 通道各占 2 字节（16 位大端）。
         """
         slave1_ip = self.slaves[0]["ip"] if self.slaves else None
         if slave1_ip is None or client_host != slave1_ip:
             return
-        values = []
-        for reg in reversed(registers):
-            for bit in range(16):
-                values.append((reg >> bit) & 1)
-        self.data_queue.put(values[:96])
+        data = b"".join(r.to_bytes(2, "big") for r in registers)
+        values = self._parse_input_bytes(data)
+        self.data_queue.put(values)
 
     def _on_read_holding_registers(self, client_host, address, count):
         """client 读保持寄存器，依据 IP 返回从站1 输出通道打包值。"""
         slave1_ip = self.slaves[0]["ip"] if self.slaves else None
         if slave1_ip is None or client_host != slave1_ip:
             return None
-        full = self._pack_output_values()  # 6 个寄存器 = 96 位
+        full = self._pack_output_registers()  # 36 个寄存器 = 72 字节
         return full[address:address + count]
 
-    def _pack_output_values(self):
-        """把 96 个输出通道的“输出值”打包成 6 个寄存器（大端位序）。
+    def _pack_output_registers(self):
+        """把 96 个输出通道打包成 36 个寄存器（72 字节）。
 
-        第 0 位=通道1（最低位）、第 95 位=通道96（最高位）。
-        序列化成 12 字节时，通道1 落在最后一个字节的最低位，通道96 落在第一个字节的最高位。
+        前 64 个 DO 通道按位打包（8 通道/字节，共 8 字节 = 4 寄存器），
+        后 32 个 AO 通道各占 2 字节（16 位大端，共 64 字节 = 32 寄存器）。
         """
-        regs = [0] * 6
-        for i, row in enumerate(self.output_table.rows[:96]):
-            if self._to_bit(row[-1]):
-                regs[5 - (i // 16)] |= 1 << (i % 16)
-        return regs
+        buf = bytearray(72)
+        for i in range(64):
+            if self._to_bit(self.output_table.rows[i][-1]):
+                buf[i // 8] |= 1 << (i % 8)
+        for k in range(32):
+            val = self._to_int(self.output_table.rows[64 + k][-1])
+            buf[8 + 2 * k] = (val >> 8) & 0xFF
+            buf[8 + 2 * k + 1] = val & 0xFF
+        return [int.from_bytes(buf[i:i + 2], "big") for i in range(0, 72, 2)]
+
+    @staticmethod
+    def _parse_input_bytes(data):
+        """把 72 字节解析成 96 个通道值（index i = 通道 i+1）。"""
+        values = []
+        for i in range(8):
+            byte = data[i] if i < len(data) else 0
+            for j in range(8):
+                values.append((byte >> j) & 1)
+        for k in range(32):
+            base = 8 + 2 * k
+            hi = data[base] if base < len(data) else 0
+            lo = data[base + 1] if base + 1 < len(data) else 0
+            values.append((hi << 8) | lo)
+        return values
 
     @staticmethod
     def _to_bit(val):
-        """把输出值解释成 0/1。"""
+        """把值解释成 0/1。"""
         try:
             return 1 if int(val) else 0
+        except (ValueError, TypeError):
+            return 0
+
+    @staticmethod
+    def _to_int(val):
+        """把值解释成整数。"""
+        try:
+            return int(val)
         except (ValueError, TypeError):
             return 0
 
